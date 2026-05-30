@@ -50,7 +50,7 @@ i2c_slave i2c_inst (
 lfsr_writer #(
     .BASE_ADDR      (BASE_ADDR_BLOCK_B),
     .N_REGS         (N_REGS_BLOCK_B)
-) lfsr (
+) lfsr_inst (
     .clk            (clk),
     .N_RST          (N_RST),     
     .waddr          (reg_addr_lfsr),

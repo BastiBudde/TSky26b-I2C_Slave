@@ -153,7 +153,8 @@ wire stop_detect = sda_rising && scl_q; // rising edge of SDA while SCL is high 
                                                         state <= S_READ;
                                                 else // if master NACKed received data, transition back to IDLE state to end the transaction
                                                         state <= S_IDLE;
-                                        
+                                                        
+                                        default:    state <= S_IDLE;  // recover from invalid state
                                 endcase
                         end
                 end
