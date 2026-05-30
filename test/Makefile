@@ -2,8 +2,11 @@
 # See https://docs.cocotb.org/en/stable/quickstart.html for more info
 
 # defaults
-SIM ?= icarus
-FST ?= -fst # Use more efficient FST format
+
+# FST = -fst # Use more efficient FST format
+WAVE = 1
+SIM = icarus
+
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
 PROJECT_SOURCES = tt_um_BastiBudde_chip_design_i2c_slave.v top_level.v i2c_slave.v reg_block.v lfsr_writer.v

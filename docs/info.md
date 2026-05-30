@@ -17,4 +17,4 @@ Explain how to use your project
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+External Pull-Ups to 3.3V on SCL in (uio_in[0]) and SDA pin (uio_in[1])

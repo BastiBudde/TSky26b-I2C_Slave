@@ -7,39 +7,54 @@
 module tb ();
 
   // Dump the signals to a FST file. You can view it with gtkwave or surfer.
-  initial begin
-    $dumpfile("tb.fst");
-    $dumpvars(0, tb);
-    #1;
+  // initial begin
+  //   $dumpfile("tb.fst");
+  //   $dumpvars(0, tb);
+  //   #1;
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[0]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[1]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[2]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[3]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[4]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[5]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[6]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[7]);
 
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[0]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[1]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[2]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[3]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[4]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[5]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[6]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[7]);
-
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[0]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[1]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[2]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[3]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[4]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[5]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[6]);
-    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[7]);
-  end
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[0]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[1]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[2]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[3]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[4]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[5]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[6]);
+  //   $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[7]);
+  // end
 
   // Wire up the inputs and outputs:
   reg clk;
   reg rst_n;
   reg ena;
   reg [7:0] ui_in;
-  reg [7:0] uio_in;
   wire [7:0] uo_out;
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
+
+  // --- I2C bus modeling -----------------------------------------------------
+  // The cocotb master controls these two signals (1 = released, 0 = pull low).
+  reg scl_master_drive;
+  reg sda_master_drive;
+
+  // The slave inside the DUT drives uio_oe[1] high to pull SDA low.
+  // Bus is low if either the master or the slave pulls low; otherwise high.
+  wire scl_bus = scl_master_drive;                 // master is the only driver
+  wire sda_bus = sda_master_drive & ~uio_oe[1];    // master AND slave released
+
+  // uio_in is what the chip "sees" on its bidirectional pins.
+  // Bits 0 and 1 are the I2C bus; the rest are tied to 0 (pulled inputs).
+  wire [7:0] uio_in = {6'b000000, sda_bus, scl_bus};
+  // --------------------------------------------------------------------------
+
+
 `ifdef GL_TEST
   wire VPWR = 1'b1;
   wire VGND = 1'b0;

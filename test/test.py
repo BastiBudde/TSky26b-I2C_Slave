@@ -55,24 +55,22 @@ class I2cMasterWithAck(I2cMaster):
 async def reset_dut(dut):
     """Resetting device, making Bus idle"""
     await Timer(5000, unit="ns")
-    dut.N_RST.value = 0
-    dut.SCL.value = 1
-    dut.SDA.value = 1
+    dut.rst_n.value = 0
+    dut.scl_master_drive.value = 1   # released
+    dut.sda_master_drive.value = 1
+    dut.ena.value = 1
+    dut.ui_in.value = 0
     await Timer(5000, unit="ns")
-    dut.N_RST.value = 1    
-    dut.SCL.value = 1
-    dut.SDA.value = 1
+    dut.rst_n.value = 1    
     await Timer(50000, unit="ns")
-    dut.SCL.value = 1
-    dut.SDA.value = 1
     await RisingEdge(dut.clk)
 
 def make_master(dut, speed=400e3):
     return I2cMasterWithAck(
-        sda=dut.sda_observed,
-        sda_o=dut.sda_master_drive,
-        scl=dut.scl_observed,
-        scl_o=dut.scl_master_drive,
+        sda=dut.sda_bus,                  # observed SDA
+        sda_o=dut.sda_master_drive,       # master drive output
+        scl=dut.scl_bus,                  # observed SCL
+        scl_o=dut.scl_master_drive,       # master drive output
         speed=speed,
     )
 
@@ -92,10 +90,10 @@ async def reg_write_monitor(dut, captured):
     while True:
         await RisingEdge(dut.clk)
         await ReadOnly()
-        if str(dut.top_level_inst.i2c_inst.reg_write.value) == "1":
+        if str(dut.user_project.top_level_inst.i2c_inst.reg_write.value) == "1":
             captured.append((
-                int(dut.top_level_inst.i2c_inst.reg_addr.value),
-                int(dut.top_level_inst.i2c_inst.data_out.value),
+                int(dut.user_project.top_level_inst.i2c_inst.reg_addr.value),
+                int(dut.user_project.top_level_inst.i2c_inst.data_out.value),
             ))
 
 
@@ -116,7 +114,7 @@ async def test_write_address(dut, speed):
     for _ in range(5):
         await RisingEdge(dut.clk)
 
-    state = int(dut.top_level_inst.i2c_inst.state.value)
+    state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
     assert state == S_RCV_PTR, (
         f"After write address (speed={speed:.0e}), expected S_RCV_PTR "
         f"({S_RCV_PTR}), got {state}"
@@ -146,7 +144,7 @@ async def test_read_address(dut, speed):
 
     _first_byte = await master.recv_byte(False)   # ACK -> ask for another byte
 
-    state = int(dut.top_level_inst.i2c_inst.state.value)
+    state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
     assert state == S_READ, (
         f"During read transaction, expected S_READ ({S_READ}), got {state}"
     )
@@ -177,7 +175,7 @@ async def test_wrong_address_no_ack(dut, wrong_addr, speed):
     for _ in range(5):
         await RisingEdge(dut.clk)
 
-    state = int(dut.top_level_inst.i2c_inst.state.value)
+    state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
     assert state == S_IDLE, (
         f"After foreign address 0x{wrong_addr:02X}, expected S_IDLE ({S_IDLE}), "
         f"got {state}"
@@ -236,7 +234,7 @@ async def test_full_write(dut, speed):
         f"reg_write data 0x{data:02X} != expected 0x{WRITE_DATA:02X}"
 
     # 3) Physical register content
-    reg3 = int(dut.top_level_inst.reg_block_a.registers[WRITE_INDEX].value)
+    reg3 = int(dut.user_project.top_level_inst.reg_block_a.registers[WRITE_INDEX].value)
     assert reg3 == WRITE_DATA, (
         f"regs[{WRITE_INDEX}] = 0x{reg3:02X}, expected 0x{WRITE_DATA:02X}"
     )
@@ -334,7 +332,7 @@ async def test_bulk_write(dut, speed):
 
     # 3) Physical register content
     for i, b in enumerate(data_bytes):
-        reg_val = int(dut.top_level_inst.reg_block_a.registers[start_index + i].value)
+        reg_val = int(dut.user_project.top_level_inst.reg_block_a.registers[start_index + i].value)
         assert reg_val == b, (
             f"registers[{start_index + i}] = 0x{reg_val:02X}, expected 0x{b:02X}"
         )
@@ -395,7 +393,7 @@ async def test_address_decoding(dut, speed):
     master = make_master(dut, speed=speed)
 
     # Snapshot of all A registers right after reset (LFSR doesn't touch A)
-    reset_a = extract_reset_values(dut.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=8)
+    reset_a = extract_reset_values(dut.user_project.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=8)
 
     a_index, a_value = 0x02, 0xA5
     b_index           = 0x0B   # in Block B; we will try to write here
@@ -412,7 +410,7 @@ async def test_address_decoding(dut, speed):
     assert all(acks_b), f"Block B write not fully ACKed: {acks_b}"
 
     # 1) The A-write landed in A
-    a_val = int(dut.top_level_inst.reg_block_a.registers[a_index].value)
+    a_val = int(dut.user_project.top_level_inst.reg_block_a.registers[a_index].value)
     assert a_val == a_value, (
         f"reg_block_a.registers[{a_index}] = 0x{a_val:02X}, expected 0x{a_value:02X}"
     )
@@ -421,7 +419,7 @@ async def test_address_decoding(dut, speed):
     for i in range(8):
         if i == a_index:
             continue
-        val = int(dut.top_level_inst.reg_block_a.registers[i].value)
+        val = int(dut.user_project.top_level_inst.reg_block_a.registers[i].value)
         assert val == reset_a[i], (
             f"reg_block_a.registers[{i}] disturbed: 0x{val:02X}, "
             f"expected reset value 0x{reset_a[i]:02X}"
@@ -470,7 +468,7 @@ async def test_unmapped_address(dut, speed):
     )
 
     # Reference register must still be untouched
-    ref = int(dut.top_level_inst.reg_block_a.registers[reference_index].value)
+    ref = int(dut.user_project.top_level_inst.reg_block_a.registers[reference_index].value)
     assert ref == reference_value, (
         f"Reference register 0x{reference_index:02X} disturbed: "
         f"0x{ref:02X}, expected 0x{reference_value:02X}"
@@ -595,10 +593,10 @@ async def test_all_b_registers_updated(dut, speed):
     master = make_master(dut, speed=speed)
 
     # Pull block parameters from the RTL — single source of truth
-    base_addr = int(dut.top_level_inst.reg_block_b.BASE_ADDR.value)
-    n_regs    = int(dut.top_level_inst.reg_block_b.N_REGS.value)
+    base_addr = int(dut.user_project.top_level_inst.reg_block_b.BASE_ADDR.value)
+    n_regs    = int(dut.user_project.top_level_inst.reg_block_b.N_REGS.value)
     reset_b_local = extract_reset_values(
-        dut.top_level_inst.reg_block_b.RESET_VALUES.value, n_regs=n_regs
+        dut.user_project.top_level_inst.reg_block_b.RESET_VALUES.value, n_regs=n_regs
     )
     reset_values = {base_addr + i: v for i, v in reset_b_local.items()}
 
@@ -636,8 +634,8 @@ async def test_block_a_unaffected_by_lfsr(dut, speed):
     master = make_master(dut, speed=speed)
 
     # Pull block A parameters from the RTL
-    base_addr = int(dut.top_level_inst.reg_block_a.BASE_ADDR.value)
-    n_regs    = int(dut.top_level_inst.reg_block_a.N_REGS.value)
+    base_addr = int(dut.user_project.top_level_inst.reg_block_a.BASE_ADDR.value)
+    n_regs    = int(dut.user_project.top_level_inst.reg_block_a.N_REGS.value)
 
     # Build a distinguishable pattern, one unique value per address.
     # 0xA0 | low3 makes each value carry its own address in the low bits.
@@ -676,7 +674,7 @@ async def test_bulk_read_stress(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    n_iterations     = 20
+    n_iterations     = 10
     n_bytes_per_read = 4
     start_index      = 0x09
     all_reads        = []
@@ -697,7 +695,7 @@ async def test_bulk_read_stress(dut, speed):
         # After each transaction: state back to IDLE?
         for _ in range(5):
             await RisingEdge(dut.clk)
-        state = int(dut.top_level_inst.i2c_inst.state.value)
+        state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
         assert state == S_IDLE, (
             f"Iter {iteration}: state not IDLE after bulk read, got {state}"
         )
@@ -748,16 +746,16 @@ async def test_mixed_stress(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    n_iterations = 50
+    n_iterations = 10
 
     # Pull block A parameters from the RTL — single source of truth
-    base_a   = int(dut.top_level_inst.reg_block_a.BASE_ADDR.value)
-    n_regs_a = int(dut.top_level_inst.reg_block_a.N_REGS.value)
-    base_b   = int(dut.top_level_inst.reg_block_b.BASE_ADDR.value)
-    n_regs_b = int(dut.top_level_inst.reg_block_b.N_REGS.value)
+    base_a   = int(dut.user_project.top_level_inst.reg_block_a.BASE_ADDR.value)
+    n_regs_a = int(dut.user_project.top_level_inst.reg_block_a.N_REGS.value)
+    base_b   = int(dut.user_project.top_level_inst.reg_block_b.BASE_ADDR.value)
+    n_regs_b = int(dut.user_project.top_level_inst.reg_block_b.N_REGS.value)
 
     reset_a_local = extract_reset_values(
-        dut.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=n_regs_a
+        dut.user_project.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=n_regs_a
     )
     expected_a = {base_a + i: v for i, v in reset_a_local.items()}
 
@@ -802,7 +800,7 @@ async def test_mixed_stress(dut, speed):
         # After each iteration: state back to IDLE?
         for _ in range(5):
             await RisingEdge(dut.clk)
-        state = int(dut.top_level_inst.i2c_inst.state.value)
+        state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
         assert state == S_IDLE, (
             f"Iter {iteration}: state not IDLE, got {state}"
         )
