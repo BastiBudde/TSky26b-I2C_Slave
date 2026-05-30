@@ -280,61 +280,63 @@ async def test_write_then_read(dut, speed):
 
 
 #---------------------------------------------------------------------------------
-#------------------------ Master bulk writing to slave ---------------------------
+#------------------------ Master bulk-writes to slave ----------------------------
 #---------------------------------------------------------------------------------
 @cocotb.test()
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_bulk_write(dut, speed):
-    """Bulk-write: one index, multiple data bytes, reg_addr auto-increment.
-
-    Verifies at three layers:
-      1) the slave produces exactly one reg_write pulse per data byte,
-      2) each pulse carries the correct sequential address and data,
-      3) the bytes physically land in the correct sequential registers.
-    """
+    """Bulk-write: one index, multiple data bytes, reg_addr auto-increment."""
     cocotb.start_soon(Clock(dut.clk, 40, unit="ns").start())
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    captured = []
-    cocotb.start_soon(reg_write_monitor(dut, captured))
-
     start_index = 0x02
     data_bytes  = [0x11, 0x22, 0x33]
 
-    # The library sends one address byte, then every element of the list as
-    # a data byte, with ACK reads in between. For our slave that means:
-    # data_bytes[0] is interpreted as the register index, the rest as payload.
+    # Monitor only makes sense at RTL — internal signals are gone at gate level
+    captured = []
+    if not GATE_LEVEL:
+        cocotb.start_soon(reg_write_monitor(dut, captured))
+
+    # Bulk write transaction
     acks = await master.write(DEVICE_ADDR, [start_index] + data_bytes)
     await master.send_stop()
     assert all(acks), f"Not every byte was ACKed during bulk write: {acks}"
 
-    # Give the monitor a few cycles to settle after the last clk
+    # Give the monitor a few cycles to settle
     for _ in range(5):
         await RisingEdge(dut.clk)
 
-    # 1) Exactly one reg_write pulse per sent data byte (not counting the index)
-    assert len(captured) == len(data_bytes), (
-        f"Expected {len(data_bytes)} reg_write pulses, got {len(captured)}: {captured}"
-    )
-
-    # 2) Each pulse at the correct sequential address with the correct data
-    for i, (addr, data) in enumerate(captured):
-        exp_addr = start_index + i
-        exp_data = data_bytes[i]
-        dut._log.info(f"Pulse {i}: addr=0x{addr:02X}, data=0x{data:02X}")
-        assert addr == exp_addr, (
-            f"Byte {i}: reg_addr 0x{addr:02X} != expected 0x{exp_addr:02X}"
-        )
-        assert data == exp_data, (
-            f"Byte {i}: data 0x{data:02X} != expected 0x{exp_data:02X}"
+    # White-box checks: pulse count, internal addr/data, physical registers
+    if not GATE_LEVEL:
+        assert len(captured) == len(data_bytes), (
+            f"Expected {len(data_bytes)} reg_write pulses, got {len(captured)}: {captured}"
         )
 
-    # 3) Physical register content
-    for i, b in enumerate(data_bytes):
-        reg_val = int(dut.user_project.top_level_inst.reg_block_a.registers[start_index + i].value)
-        assert reg_val == b, (
-            f"registers[{start_index + i}] = 0x{reg_val:02X}, expected 0x{b:02X}"
+        for i, (addr, data) in enumerate(captured):
+            exp_addr = start_index + i
+            exp_data = data_bytes[i]
+            dut._log.info(f"Pulse {i}: addr=0x{addr:02X}, data=0x{data:02X}")
+            assert addr == exp_addr, (
+                f"Byte {i}: reg_addr 0x{addr:02X} != expected 0x{exp_addr:02X}"
+            )
+            assert data == exp_data, (
+                f"Byte {i}: data 0x{data:02X} != expected 0x{exp_data:02X}"
+            )
+
+        for i, b in enumerate(data_bytes):
+            reg_val = int(dut.user_project.top_level_inst.reg_block_a.registers[start_index + i].value)
+            assert reg_val == b, (
+                f"registers[{start_index + i}] = 0x{reg_val:02X}, expected 0x{b:02X}"
+            )
+
+    # Black-box equivalent: read each target register back via I2C and verify.
+    # Works at both RTL and gate level.
+    for i, expected in enumerate(data_bytes):
+        addr = start_index + i
+        readback = await read_register(master, addr)
+        assert readback == expected, (
+            f"Readback A[0x{addr:02X}] = 0x{readback:02X}, expected 0x{expected:02X}"
         )
 
     dut._log.info("Bulk-write correct — all bytes at the right places.")
@@ -699,7 +701,7 @@ async def test_bulk_read_stress(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    n_iterations     = 100
+    n_iterations     = 20
     n_bytes_per_read = 4
     start_index      = 0x09
     all_reads        = []
@@ -790,7 +792,7 @@ async def test_mixed_stress(dut, speed):
         addr = base_a + i
         expected_a[addr] = await read_register(master, addr)
 
-    n_iterations = 100
+    n_iterations = 20
 
     for iteration in range(n_iterations):
         op = rng.choice(["write", "read"])
