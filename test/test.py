@@ -6,6 +6,9 @@ from cocotb.clock import Clock
 from cocotb.triggers import Timer, RisingEdge, ReadOnly
 from cocotbext.i2c import I2cMaster
 
+import os
+GATE_LEVEL = os.getenv("GATES") == "yes"
+
 #---------------------------------------------------------------------------------
 #---------------------------------- Parameters -----------------------------------
 #---------------------------------------------------------------------------------
@@ -100,7 +103,7 @@ async def reg_write_monitor(dut, captured):
 #---------------------------------------------------------------------------------
 #--------------------- Slave ACKing matching address + write ---------------------
 #---------------------------------------------------------------------------------
-@cocotb.test()
+@cocotb.test(skip=GATE_LEVEL)
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_write_address(dut, speed):
     """Address with write bit must be ACKed; slave enters S_RCV_PTR state."""
@@ -127,7 +130,7 @@ async def test_write_address(dut, speed):
 #---------------------------------------------------------------------------------
 #----------------- Address match + read bit: ACK and state check -----------------
 #---------------------------------------------------------------------------------
-@cocotb.test()
+@cocotb.test(skip=GATE_LEVEL)
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_read_address(dut, speed):
     """Address with read bit must be ACKed; slave enters S_READ state."""
@@ -158,7 +161,7 @@ async def test_read_address(dut, speed):
 #---------------------------------------------------------------------------------
 #----------------- Wrong address: no ACK, slave stays in IDLE --------------------
 #---------------------------------------------------------------------------------
-@cocotb.test()
+@cocotb.test(skip=GATE_LEVEL)
 @cocotb.parametrize(wrong_addr=[0x42, 0x54, 0x56], speed=[100e3, 400e3, 1e6])
 async def test_wrong_address_no_ack(dut, wrong_addr, speed):
     """Foreign address must be NACKed; slave must stay in S_IDLE."""
@@ -195,51 +198,48 @@ WRITE_DATA  = 0x57
 @cocotb.test()
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_full_write(dut, speed):
-    """Complete write transaction: address, index, data byte, STOP.
-
-    Verifies three layers:
-      1) the slave acknowledges every byte,
-      2) the slave produces exactly one reg_write pulse with the correct
-         address and data on its register-file interface,
-      3) the data byte physically ends up in the target register.
-    """
     cocotb.start_soon(Clock(dut.clk, 40, unit="ns").start())
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    # Background monitor for reg_write pulses, started before the transaction
+    # Monitor only makes sense at RTL — internal signals are gone at gate level
     captured = []
-    cocotb.start_soon(reg_write_monitor(dut, captured))
+    if not GATE_LEVEL:
+        cocotb.start_soon(reg_write_monitor(dut, captured))
 
-    # Full write transaction in one call
+    # Black-box: the actual transaction works the same at RTL and gate level
     acks = await master.write(DEVICE_ADDR, [WRITE_INDEX, WRITE_DATA])
     await master.send_stop()
-
-    # 1) Every byte must have been ACKed (address, index, data)
     assert all(acks), f"Not every byte was ACKed: {acks}"
 
-    # Give the monitor a few cycles to settle after the last clk
     for _ in range(5):
         await RisingEdge(dut.clk)
 
-    # 2) Exactly one reg_write pulse at the right place with the right data
-    assert len(captured) == 1, (
-        f"Expected exactly 1 reg_write pulse, got {len(captured)}: {captured}"
-    )
-    addr, data = captured[0]
-    dut._log.info(f"reg_write pulse: addr=0x{addr:02X}, data=0x{data:02X}")
-    assert addr == WRITE_INDEX, \
-        f"reg_write addr 0x{addr:02X} != expected 0x{WRITE_INDEX:02X}"
-    assert data == WRITE_DATA, \
-        f"reg_write data 0x{data:02X} != expected 0x{WRITE_DATA:02X}"
+    # White-box checks: only at RTL
+    if not GATE_LEVEL:
+        assert len(captured) == 1, (
+            f"Expected exactly 1 reg_write pulse, got {len(captured)}: {captured}"
+        )
+        addr, data = captured[0]
+        dut._log.info(f"reg_write pulse: addr=0x{addr:02X}, data=0x{data:02X}")
+        assert addr == WRITE_INDEX, \
+            f"reg_write addr 0x{addr:02X} != expected 0x{WRITE_INDEX:02X}"
+        assert data == WRITE_DATA, \
+            f"reg_write data 0x{data:02X} != expected 0x{WRITE_DATA:02X}"
 
-    # 3) Physical register content
-    reg3 = int(dut.user_project.top_level_inst.reg_block_a.registers[WRITE_INDEX].value)
-    assert reg3 == WRITE_DATA, (
-        f"regs[{WRITE_INDEX}] = 0x{reg3:02X}, expected 0x{WRITE_DATA:02X}"
+        reg3 = int(dut.user_project.top_level_inst.reg_block_a.registers[WRITE_INDEX].value)
+        assert reg3 == WRITE_DATA, (
+            f"regs[{WRITE_INDEX}] = 0x{reg3:02X}, expected 0x{WRITE_DATA:02X}"
+        )
+
+    # Black-box readback works at both RTL and gate level — add it as an
+    # extra check so gate-level still verifies *something* about the write
+    readback = await read_register(master, WRITE_INDEX)
+    assert readback == WRITE_DATA, (
+        f"Readback after write: 0x{readback:02X} != 0x{WRITE_DATA:02X}"
     )
 
-    dut._log.info("Write transaction verified at all three layers.")
+    dut._log.info("Write transaction verified.")
 
 
 #---------------------------------------------------------------------------------
@@ -386,43 +386,60 @@ async def test_address_decoding(dut, speed):
 
     Block A is master-writable, Block B is read-only (fed by the LFSR).
     A write attempt to B must be ACKed by the slave but leave Block A
-    completely unaffected — and vice versa.
+    completely unaffected.
     """
     cocotb.start_soon(Clock(dut.clk, 40, unit="ns").start())
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    # Snapshot of all A registers right after reset (LFSR doesn't touch A)
-    reset_a = extract_reset_values(dut.user_project.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=8)
-
     a_index, a_value = 0x02, 0xA5
-    b_index           = 0x0B   # in Block B; we will try to write here
-    b_local           = b_index - 0x08
+    b_index          = 0x0B
 
-    # --- Write to A (should land in A) ---
+    # Snapshot of all A registers via I2C read-back, right after reset.
+    # At RTL level we could also read the RESET_VALUES parameter directly,
+    # but reading via the bus works at both RTL and gate level.
+    reset_a = {}
+    for i in range(8):
+        reset_a[i] = await read_register(master, i)
+
+    # --- Write to A ---
     acks_a = await master.write(DEVICE_ADDR, [a_index, a_value])
     await master.send_stop()
     assert all(acks_a), f"Block A write not fully ACKed: {acks_a}"
 
-    # --- Write attempt to B (should be ACKed but have no effect on any register) ---
+    # --- Write attempt to B (will be ACKed but must have no effect) ---
     acks_b = await master.write(DEVICE_ADDR, [b_index, 0xFF])
     await master.send_stop()
     assert all(acks_b), f"Block B write not fully ACKed: {acks_b}"
 
-    # 1) The A-write landed in A
-    a_val = int(dut.user_project.top_level_inst.reg_block_a.registers[a_index].value)
-    assert a_val == a_value, (
-        f"reg_block_a.registers[{a_index}] = 0x{a_val:02X}, expected 0x{a_value:02X}"
-    )
+    # White-box checks: only meaningful at RTL
+    if not GATE_LEVEL:
+        a_val = int(dut.user_project.top_level_inst.reg_block_a.registers[a_index].value)
+        assert a_val == a_value, (
+            f"reg_block_a.registers[{a_index}] = 0x{a_val:02X}, expected 0x{a_value:02X}"
+        )
+        for i in range(8):
+            if i == a_index:
+                continue
+            val = int(dut.user_project.top_level_inst.reg_block_a.registers[i].value)
+            assert val == reset_a[i], (
+                f"reg_block_a.registers[{i}] disturbed: 0x{val:02X}, "
+                f"expected reset value 0x{reset_a[i]:02X}"
+            )
 
-    # 2) No other A register was disturbed by either write
+    # Black-box equivalent: read every A register back via I2C and check.
+    # This runs at both RTL and gate level — the white-box version above
+    # is a stronger statement at RTL but the bus-level check covers gate level.
+    a_readback = await read_register(master, a_index)
+    assert a_readback == a_value, (
+        f"A[0x{a_index:02X}] readback = 0x{a_readback:02X}, expected 0x{a_value:02X}"
+    )
     for i in range(8):
         if i == a_index:
             continue
-        val = int(dut.user_project.top_level_inst.reg_block_a.registers[i].value)
+        val = await read_register(master, i)
         assert val == reset_a[i], (
-            f"reg_block_a.registers[{i}] disturbed: 0x{val:02X}, "
-            f"expected reset value 0x{reset_a[i]:02X}"
+            f"A[0x{i:02X}] disturbed: 0x{val:02X}, expected 0x{reset_a[i]:02X}"
         )
 
     dut._log.info("Address decoding correct — A targeted precisely, "
@@ -451,7 +468,7 @@ async def test_unmapped_address(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    unmapped_index = 0x20
+    unmapped_index  = 0x20
     reference_index = 0x05
     reference_value = 0x99
 
@@ -467,17 +484,25 @@ async def test_unmapped_address(dut, speed):
         f"Write to unmapped address not fully ACKed: {acks_write}"
     )
 
-    # Reference register must still be untouched
-    ref = int(dut.user_project.top_level_inst.reg_block_a.registers[reference_index].value)
-    assert ref == reference_value, (
-        f"Reference register 0x{reference_index:02X} disturbed: "
-        f"0x{ref:02X}, expected 0x{reference_value:02X}"
+    # White-box check: only meaningful at RTL
+    if not GATE_LEVEL:
+        ref = int(dut.user_project.top_level_inst.reg_block_a.registers[reference_index].value)
+        assert ref == reference_value, (
+            f"Reference register 0x{reference_index:02X} disturbed: "
+            f"0x{ref:02X}, expected 0x{reference_value:02X}"
+        )
+
+    # Black-box equivalent: read the reference register back via the bus.
+    # Works at both RTL and gate level.
+    ref_readback = await read_register(master, reference_index)
+    assert ref_readback == reference_value, (
+        f"Reference register 0x{reference_index:02X} disturbed (readback): "
+        f"0x{ref_readback:02X}, expected 0x{reference_value:02X}"
     )
 
     # --- Read attempt from the unmapped address: must return 0x00 ---
     acks_idx = await master.write(DEVICE_ADDR, [unmapped_index])
     assert all(acks_idx), f"Index phase not fully ACKed: {acks_idx}"
-
     data, addr_acked = await master.read(DEVICE_ADDR, 1)
     await master.send_stop()
     assert addr_acked, "Slave did not ACK the read address"
@@ -584,7 +609,7 @@ async def test_lfsr_is_active(dut, speed):
 #---------------------------------------------------------------------------------
 #----------------------- All B registers get updated -----------------------------
 #---------------------------------------------------------------------------------
-@cocotb.test()
+@cocotb.test(skip=GATE_LEVEL)
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_all_b_registers_updated(dut, speed):
     """Over time the LFSR must write each individual register in Block B."""
@@ -625,7 +650,7 @@ async def test_all_b_registers_updated(dut, speed):
 #---------------------------------------------------------------------------------
 #------------------------- Block A unaffected by LFSR ----------------------------
 #---------------------------------------------------------------------------------
-@cocotb.test()
+@cocotb.test(skip=GATE_LEVEL)
 @cocotb.parametrize(speed=[100e3, 400e3, 1e6])
 async def test_block_a_unaffected_by_lfsr(dut, speed):
     """LFSR activity must not write any values into Block A."""
@@ -674,17 +699,21 @@ async def test_bulk_read_stress(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    n_iterations     = 10
+    n_iterations     = 100
     n_bytes_per_read = 4
     start_index      = 0x09
     all_reads        = []
 
     for iteration in range(n_iterations):
-        # Set pointer, then repeated-START into a multi-byte read
+        # Set pointer, then repeated-START into a multi-byte read.
+        # An ACK on the very next iteration's address phase implicitly
+        # confirms the slave returned to S_IDLE after the previous one.
         acks_idx = await master.write(DEVICE_ADDR, [start_index])
         assert all(acks_idx), (
-            f"Iter {iteration}: index phase not fully ACKed: {acks_idx}"
+            f"Iter {iteration}: index phase not fully ACKed: {acks_idx} "
+            f"(slave may not have returned to S_IDLE after previous iteration)"
         )
+
         data, addr_acked = await master.read(DEVICE_ADDR, n_bytes_per_read)
         await master.send_stop()
         assert addr_acked, f"Iter {iteration}: read address not ACKed"
@@ -692,13 +721,15 @@ async def test_bulk_read_stress(dut, speed):
         bytes_this_iter = list(data)
         all_reads.append(bytes_this_iter)
 
-        # After each transaction: state back to IDLE?
+        # Wait a few cycles, then check state if we have access to internals
         for _ in range(5):
             await RisingEdge(dut.clk)
-        state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
-        assert state == S_IDLE, (
-            f"Iter {iteration}: state not IDLE after bulk read, got {state}"
-        )
+
+        if not GATE_LEVEL:
+            state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
+            assert state == S_IDLE, (
+                f"Iter {iteration}: state not IDLE after bulk read, got {state}"
+            )
 
         # All values plausible (8-bit range, no x/z)?
         assert all(0 <= v <= 255 for v in bytes_this_iter), (
@@ -746,21 +777,20 @@ async def test_mixed_stress(dut, speed):
     await reset_dut(dut)
     master = make_master(dut, speed=speed)
 
-    n_iterations = 10
-
-    # Pull block A parameters from the RTL — single source of truth
-    base_a   = int(dut.user_project.top_level_inst.reg_block_a.BASE_ADDR.value)
-    n_regs_a = int(dut.user_project.top_level_inst.reg_block_a.N_REGS.value)
-    base_b   = int(dut.user_project.top_level_inst.reg_block_b.BASE_ADDR.value)
-    n_regs_b = int(dut.user_project.top_level_inst.reg_block_b.N_REGS.value)
-
-    reset_a_local = extract_reset_values(
-        dut.user_project.top_level_inst.reg_block_a.RESET_VALUES.value, n_regs=n_regs_a
-    )
-    expected_a = {base_a + i: v for i, v in reset_a_local.items()}
-
+    # Block layout: hardcoded but matches the RTL parameters in top_level.v
+    base_a, n_regs_a = 0x00, 8
+    base_b, n_regs_b = 0x08, 8
     a_range_max  = base_a + n_regs_a - 1
-    ab_range_max = base_b + n_regs_b - 1   # = end of B
+    ab_range_max = base_b + n_regs_b - 1
+
+    # Initialize the shadow model by reading every A register over the bus.
+    # This works at both RTL and gate level and avoids hardcoding RESET_VALUES.
+    expected_a = {}
+    for i in range(n_regs_a):
+        addr = base_a + i
+        expected_a[addr] = await read_register(master, addr)
+
+    n_iterations = 100
 
     for iteration in range(n_iterations):
         op = rng.choice(["write", "read"])
@@ -778,7 +808,6 @@ async def test_mixed_stress(dut, speed):
 
         else:  # read
             addr = rng.randint(base_a, ab_range_max)   # can be A or B
-
             acks_idx = await master.write(DEVICE_ADDR, [addr])
             assert all(acks_idx), (
                 f"Iter {iteration}: index phase for read not ACKed: {acks_idx}"
@@ -797,13 +826,15 @@ async def test_mixed_stress(dut, speed):
                     f"model says 0x{expected_a[addr]:02X}"
                 )
 
-        # After each iteration: state back to IDLE?
+        # Wait a few cycles, then check state if we have access to internals
         for _ in range(5):
             await RisingEdge(dut.clk)
-        state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
-        assert state == S_IDLE, (
-            f"Iter {iteration}: state not IDLE, got {state}"
-        )
+
+        if not GATE_LEVEL:
+            state = int(dut.user_project.top_level_inst.i2c_inst.state.value)
+            assert state == S_IDLE, (
+                f"Iter {iteration}: state not IDLE, got {state}"
+            )
 
         await Timer(200, unit="us")
 
