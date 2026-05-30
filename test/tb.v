@@ -11,6 +11,24 @@ module tb ();
     $dumpfile("tb.fst");
     $dumpvars(0, tb);
     #1;
+
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[0]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[1]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[2]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[3]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[4]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[5]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[6]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_a.registers[7]);
+
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[0]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[1]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[2]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[3]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[4]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[5]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[6]);
+    $dumpvars(0, user_project.top_level_inst.reg_block_b.registers[7]);
   end
 
   // Wire up the inputs and outputs:
@@ -28,7 +46,7 @@ module tb ();
 `endif
 
   // Replace tt_um_example with your module name:
-  tt_um_example user_project (
+  tt_um_BastiBudde_chip_design_i2c_slave user_project (
 
       // Include power ports for the Gate Level test:
 `ifdef GL_TEST
