@@ -17,4 +17,4 @@ Ideally the device would be tested with a microcontroller that has a real I2C in
 
 ## External hardware
 
-External Pull-Ups to 3.3V on SCL in (uio_in[0]) and SDA pin (uio_in[1])
+External Pull-Ups to 3.3V on SCL pin (uio_in[0]) and SDA pin (uio_in[1])
