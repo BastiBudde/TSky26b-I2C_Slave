@@ -44,14 +44,14 @@ module tb ();
   reg scl_master_drive;
   reg sda_master_drive;
 
-  // The slave inside the DUT drives uio_oe[1] high to pull SDA low.
+  // The slave inside the DUT drives uio_oe[3] high to pull SDA low.
   // Bus is low if either the master or the slave pulls low; otherwise high.
   wire scl_bus = scl_master_drive;                 // master is the only driver
   wire sda_bus = sda_master_drive & ~uio_oe[3];    // master AND slave released
 
   // uio_in is what the chip "sees" on its bidirectional pins.
   // Bits 0 and 1 are the I2C bus; the rest are tied to 0 (pulled inputs).
-  wire [7:0] uio_in = {4'b0000, sda_bus, scl_bus, 2'b00};
+  wire [7:0] uio_in = {4'b0000, sda_bus, 2'b00, scl_bus};
   // --------------------------------------------------------------------------
 
 
